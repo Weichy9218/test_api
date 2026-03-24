@@ -2,6 +2,23 @@
 
 检查 API 连通性和可用模型的工具集。
 
+## 快速开始
+
+```bash
+# 克隆
+git clone <repo-url> && cd check_api
+
+# 配置环境变量
+cp .env.example .env
+# 编辑 .env，填入你的 API key
+
+# 直接运行（仅依赖 Python 标准库，无需安装）
+python3 check_new_api.py
+python3 check_openrouter.py
+```
+
+本项目**无第三方依赖**，`pyproject.toml` 用于 `uv` / `pip` 兼容管理。
+
 ## 文件列表
 
 | 文件 | 说明 |
