@@ -1,0 +1,11 @@
+[project]
+name = "check-api"
+version = "0.1.0"
+description = "Check API connectivity, available models, and chat completion for OpenRouter / new-api proxies"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
