@@ -59,7 +59,7 @@ def test_chat(base_url: str, api_key: str, model: str) -> dict:
     payload = json.dumps({
         "model": model,
         "messages": [{"role": "user", "content": "Say hi"}],
-        "max_tokens": 5,
+        "max_tokens": 64,
     }).encode()
     req = urllib.request.Request(url, data=payload, headers={
         "Authorization": f"Bearer {api_key}",
@@ -125,7 +125,7 @@ def main():
     print("Step 3: Chat Completion 测试")
     print("=" * 50)
     # 优先用 gpt-4o-mini，回退到第一个可用模型
-    test_candidates = ["gpt-4o-mini", "gpt-4.1-mini", "gpt-3.5-turbo", "deepseek-chat"]
+    test_candidates = ["gpt-4o-mini", "gpt-4.1-mini", "anthropic/claude-sonnet-4.5", "xiaomi/mimo-v2-pro", "gpt-3.5-turbo", "deepseek-chat"]
     test_model = None
     available_ids = {m["id"] for m in models}
     for c in test_candidates:

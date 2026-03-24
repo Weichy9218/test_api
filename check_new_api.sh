@@ -68,7 +68,7 @@ TEST_MODEL=$(python3 -c "
 import json
 data = json.load(open('/tmp/_newapi_models.json'))
 ids = {m['id'] for m in data.get('data',[])}
-for c in ['gpt-4o-mini','gpt-4.1-mini','gpt-3.5-turbo','deepseek-chat']:
+for c in ['gpt-4o-mini','gpt-4.1-mini','anthropic/claude-sonnet-4.5','xiaomi/mimo-v2-pro','gpt-3.5-turbo','deepseek-chat']:
     if c in ids: print(c); exit()
 models = data.get('data',[])
 if models: print(models[0]['id'])
@@ -81,7 +81,7 @@ else
     CHAT_RESULT=$(curl -s --max-time 30 \
         -H "Authorization: Bearer $API_KEY" \
         -H "Content-Type: application/json" \
-        -d "{\"model\":\"$TEST_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"Say hi\"}],\"max_tokens\":5}" \
+        -d "{\"model\":\"$TEST_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"Say hi\"}],\"max_tokens\":64}" \
         "$BASE_URL/v1/chat/completions" 2>&1)
 
     # 提取回复内容
