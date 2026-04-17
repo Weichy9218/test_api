@@ -17,7 +17,7 @@ python3 check_new_api.py
 python3 check_openrouter.py
 ```
 
-本项目**无第三方依赖**，`pyproject.toml` 用于 `uv` / `pip` 兼容管理。
+本项目主要使用 Python 标准库；新增的 `codex_sub2api` 客户端依赖官方 `openai` SDK。
 
 ## 文件列表
 
@@ -27,6 +27,8 @@ python3 check_openrouter.py
 | `check_openrouter.sh` | Bash 版 OpenRouter 检查 |
 | `check_new_api.py` | 检查 new-api 中转（连通性 + 模型列表 + chat 测试） |
 | `check_new_api.sh` | Bash 版 new-api 检查 |
+| `check_codex_sub2api.py` | 通过 `core/llm/codex_sub2api_client.py` 走 Responses streaming 做真实连通性测试 |
+| `core/llm/` | 最小可复用的 Responses API 客户端骨架 |
 
 ## 环境变量
 
@@ -40,6 +42,10 @@ OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 # new-api 中转（check_new_api.*）
 NEW_API_KEY=sk-...
 NEW_BASE_URL=https://new-api.haoxiang.ai
+
+# codex_sub2api（check_codex_sub2api.py）
+HAOXIANG_OPENAI_API_KEY=sk-...
+HAOXIANG_BASE_URL=https://ie-crs.haoxiang.ai/v1
 ```
 
 ## 用法
@@ -56,6 +62,10 @@ bash check_new_api.sh /path/to/other.env
 # OpenRouter 同理
 python3 check_openrouter.py
 bash check_openrouter.sh
+
+# codex_sub2api Responses client
+uv run python check_codex_sub2api.py /path/to/.env
+uv run python check_codex_sub2api.py /path/to/.env --retries 2 --model gpt-5.4
 ```
 
 ## check_new_api 功能
