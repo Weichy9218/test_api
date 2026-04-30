@@ -1,23 +1,30 @@
 """
-OpenAI Responses API client used as the base for the codex_sub2api adapter.
+OpenAI Client
+
+OpenAI SDK client using the Responses API.
 """
 
-from __future__ import annotations
-
 import os
-from typing import Any, Dict, List, Optional
+from typing import List, Dict, Any, Optional
+from openai import AsyncOpenAI, OpenAI, APITimeoutError
 
-from openai import APITimeoutError, AsyncOpenAI, OpenAI
-
-from .base import BaseLLMClient, LLMResponse, register_llm_client_class
+from .base import LLMResponse, OpenAISDKClient, register_llm_client
 from .env_utils import load_env
 
+# Load environment variables
 load_env()
 
 
-@register_llm_client_class("OpenAI")
-class OpenAIClient(BaseLLMClient):
-    """Thin wrapper around the OpenAI SDK Responses API."""
+@register_llm_client("openai", aliases=("OpenAI",))
+class OpenAIClient(OpenAISDKClient):
+    """
+    OpenAI client using the official SDK.
+
+    Features:
+    - Responses API
+    - Optional tool calling (including web_search)
+    - Streaming support (single-chunk fallback)
+    """
 
     def __init__(
         self,
@@ -31,30 +38,35 @@ class OpenAIClient(BaseLLMClient):
         web_search_options: Optional[Dict[str, Any]] = None,
         reasoning_effort: Optional[str] = None,
         async_mode: bool = True,
-        **kwargs: Any,
+        **kwargs
     ):
-        super().__init__(model, temperature, **kwargs)
-
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self.base_url = base_url or os.getenv("OPENAI_BASE_URL")
+        resolved_api_key = api_key or os.getenv("OPENAI_API_KEY")
+        resolved_base_url = base_url or os.getenv("OPENAI_BASE_URL")
+        super().__init__(
+            model=model,
+            temperature=temperature,
+            api_key=resolved_api_key,
+            base_url=resolved_base_url,
+            async_mode=async_mode,
+            timeout_seconds=180,
+            **kwargs,
+        )
         self.max_tokens = max_tokens
-        self.async_mode = async_mode
         self.use_web_search = use_web_search
         self.web_search_type = web_search_type
         self.web_search_options = web_search_options
         self.reasoning_effort = self._normalize_reasoning_effort(reasoning_effort)
 
-        if async_mode:
-            self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url, timeout=180)
-        else:
-            self.client = OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=180)
+    def _sdk_client_classes(self):
+        return AsyncOpenAI, OpenAI
 
     def _build_web_search_tool(self) -> Dict[str, Any]:
         tool: Dict[str, Any] = {"type": self.web_search_type}
         if isinstance(self.web_search_options, dict):
             for key, value in self.web_search_options.items():
-                if key != "type":
-                    tool[key] = value
+                if key == "type":
+                    continue
+                tool[key] = value
         return tool
 
     @staticmethod
@@ -70,6 +82,14 @@ class OpenAIClient(BaseLLMClient):
             target_type = "output_text" if role in {"assistant", "tool"} else "input_text"
 
             base: Dict[str, Any] = {"role": role}
+            if role == "tool":
+                tool_call_id = msg.get("tool_call_id")
+                if tool_call_id:
+                    base["tool_call_id"] = tool_call_id
+                name = msg.get("name")
+                if name:
+                    base["name"] = name
+
             if isinstance(content, str):
                 base["content"] = [{"type": target_type, "text": content}]
                 normalized.append(base)
@@ -97,7 +117,10 @@ class OpenAIClient(BaseLLMClient):
             normalized.append(base)
         return normalized
 
-    def _build_tools(self, tools: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
+    def _build_tools(
+        self,
+        tools: Optional[List[Dict[str, Any]]]
+    ) -> Optional[List[Dict[str, Any]]]:
         merged_tools: List[Dict[str, Any]] = []
         if tools:
             merged_tools.extend(tools)
@@ -111,21 +134,45 @@ class OpenAIClient(BaseLLMClient):
                 merged_tools.append(self._build_web_search_tool())
             elif isinstance(self.web_search_options, dict):
                 for key, value in self.web_search_options.items():
-                    if key != "type" and key not in existing:
-                        existing[key] = value
+                    if key == "type" or key in existing:
+                        continue
+                    existing[key] = value
         return self._normalize_tools_for_responses(merged_tools) if merged_tools else None
 
     @staticmethod
-    def _normalize_tools_for_responses(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Convert chat-completions style function tools to Responses API format."""
+    def _normalize_tool_choice_for_responses(tool_choice: Any) -> Any:
+        """Accept Chat Completions-style forced function choices on Responses clients."""
+        if not isinstance(tool_choice, dict):
+            return tool_choice
+        if tool_choice.get("type") != "function" or "name" in tool_choice:
+            return tool_choice
+        function = tool_choice.get("function")
+        if not isinstance(function, dict):
+            return tool_choice
+        name = function.get("name")
+        if not name:
+            return tool_choice
+        return {"type": "function", "name": name}
+
+    @staticmethod
+    def _normalize_tools_for_responses(
+        tools: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Normalize tool schema to Responses API format.
+
+        OpenAI Responses API expects function tools with top-level name/description/parameters.
+        """
         normalized: List[Dict[str, Any]] = []
         for tool in tools:
             if not isinstance(tool, dict):
                 continue
             tool_type = tool.get("type")
+            # Keep web_search or other non-function tools as-is
             if tool_type and tool_type != "function":
                 normalized.append(tool)
                 continue
+
             if "name" in tool:
                 normalized.append(tool)
                 continue
@@ -148,15 +195,6 @@ class OpenAIClient(BaseLLMClient):
             normalized.append(tool)
         return normalized
 
-    @staticmethod
-    def _normalize_reasoning_effort(value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return None
-        effort = str(value).strip().lower()
-        if not effort or effort in {"none", "off", "disabled"}:
-            return None
-        return effort
-
     def _extract_text(self, response: Any) -> str:
         output_text = getattr(response, "output_text", None)
         if output_text is not None:
@@ -165,9 +203,9 @@ class OpenAIClient(BaseLLMClient):
         output = getattr(response, "output", None) or []
         chunks: List[str] = []
         for item in output:
-            item_type = getattr(item, "type", None) or (item.get("type") if isinstance(item, dict) else None)
+            item_type = self.get_field_value(item, "type")
             if item_type in {"output_text", "text", "refusal"}:
-                text = getattr(item, "text", None) or (item.get("text") if isinstance(item, dict) else None)
+                text = self.get_field_value(item, "text")
                 if isinstance(text, dict):
                     text = text.get("value")
                 if text:
@@ -175,12 +213,12 @@ class OpenAIClient(BaseLLMClient):
                 continue
             if item_type != "message":
                 continue
-            content = getattr(item, "content", None) or (item.get("content") if isinstance(item, dict) else None) or []
+            content = self.get_field_value(item, "content") or []
             for part in content:
-                part_type = getattr(part, "type", None) or (part.get("type") if isinstance(part, dict) else None)
+                part_type = self.get_field_value(part, "type")
                 if part_type not in {"output_text", "text", "refusal"}:
                     continue
-                text = getattr(part, "text", None) or (part.get("text") if isinstance(part, dict) else None)
+                text = self.get_field_value(part, "text")
                 if isinstance(text, dict):
                     text = text.get("value")
                 if text:
@@ -189,20 +227,15 @@ class OpenAIClient(BaseLLMClient):
 
     def _extract_tool_calls(self, response: Any) -> List[Dict[str, Any]]:
         tool_calls: List[Dict[str, Any]] = []
-        seen: set[tuple[str, str, str]] = set()
-
-        def _get(obj: Any, key: str) -> Any:
-            if isinstance(obj, dict):
-                return obj.get(key)
-            return getattr(obj, key, None)
+        seen: set = set()
 
         def _record(name: Optional[str], arguments: Any, call_id: Optional[str]) -> None:
             if not name:
                 return
-            dedupe_key = (call_id or "", name, str(arguments))
-            if dedupe_key in seen:
+            key = (call_id or "", name, str(arguments))
+            if key in seen:
                 return
-            seen.add(dedupe_key)
+            seen.add(key)
             tool_calls.append(
                 {
                     "id": call_id,
@@ -218,23 +251,23 @@ class OpenAIClient(BaseLLMClient):
             if obj is None:
                 return
 
-            tool_calls_field = _get(obj, "tool_calls")
+            tool_calls_field = self.get_field_value(obj, "tool_calls")
             if tool_calls_field:
-                for tool_call in tool_calls_field:
-                    function = _get(tool_call, "function")
-                    name = _get(function, "name") or _get(tool_call, "name") or _get(tool_call, "tool_name")
-                    arguments = _get(function, "arguments") if function else (_get(tool_call, "arguments") or _get(tool_call, "input"))
-                    call_id = _get(tool_call, "id") or _get(tool_call, "call_id")
-                    _record(name, arguments, call_id)
+                for tc in tool_calls_field:
+                    fn = self.get_field_value(tc, "function")
+                    name = self.get_field_value(fn, "name") or self.get_field_value(tc, "name") or self.get_field_value(tc, "tool_name")
+                    args = self.get_field_value(fn, "arguments") if fn else (self.get_field_value(tc, "arguments") or self.get_field_value(tc, "input"))
+                    call_id = self.get_field_value(tc, "id") or self.get_field_value(tc, "call_id")
+                    _record(name, args, call_id)
 
-            item_type = _get(obj, "type")
-            name = _get(obj, "name") or _get(obj, "tool_name")
-            arguments = _get(obj, "arguments") or _get(obj, "input")
-            call_id = _get(obj, "id") or _get(obj, "call_id")
-            if item_type in {"tool_call", "function_call"} or (name and arguments is not None and item_type is None):
-                _record(name, arguments, call_id)
+            item_type = self.get_field_value(obj, "type")
+            name = self.get_field_value(obj, "name") or self.get_field_value(obj, "tool_name")
+            args = self.get_field_value(obj, "arguments") or self.get_field_value(obj, "input")
+            call_id = self.get_field_value(obj, "id") or self.get_field_value(obj, "call_id")
+            if item_type in {"tool_call", "function_call"} or (name and args is not None and item_type is None):
+                _record(name, args, call_id)
 
-            content = _get(obj, "content")
+            content = self.get_field_value(obj, "content")
             if isinstance(content, list):
                 for part in content:
                     _extract_from_obj(part)
@@ -268,14 +301,17 @@ class OpenAIClient(BaseLLMClient):
         model_name = str(self.model or "").strip().lower()
         return not model_name.startswith("gpt-5")
 
-    async def chat(
+    def _build_responses_request_params(
         self,
-        messages: List[Dict[str, Any]],
+        *,
+        messages: List[Dict[str, str]],
         tools: Optional[List[Dict[str, Any]]] = None,
         response_format: Optional[Dict[str, Any]] = None,
-        **kwargs: Any,
-    ) -> LLMResponse:
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """Assemble one Responses API request."""
         tool_choice = kwargs.pop("tool_choice", None)
+        tool_choice = self._normalize_tool_choice_for_responses(tool_choice)
         reasoning_effort = self._normalize_reasoning_effort(kwargs.pop("reasoning_effort", None))
         max_completion_tokens = kwargs.pop("max_completion_tokens", None)
         if max_completion_tokens is not None and "max_output_tokens" not in kwargs:
@@ -302,7 +338,10 @@ class OpenAIClient(BaseLLMClient):
             params["tool_choice"] = tool_choice or "auto"
         if response_format is not None:
             params["response_format"] = response_format
+        return params
 
+    async def _create_response(self, params: Dict[str, Any]):
+        """Create one Responses API call with compatibility fallbacks."""
         response = None
         last_exc: Optional[Exception] = None
         for _ in range(3):
@@ -312,58 +351,100 @@ class OpenAIClient(BaseLLMClient):
                 else:
                     response = self.client.responses.create(**params)
                 break
-            except APITimeoutError:
+            except APITimeoutError as exc:
+                import logging
+
+                logger = logging.getLogger(__name__)
+                logger.error(f"OpenAI API timeout: {exc}")
+                logger.error(f"Model: {self.model}")
                 raise
             except TypeError as exc:
                 if "response_format" not in str(exc):
                     raise
+                params = dict(params)
                 params.pop("response_format", None)
                 last_exc = exc
                 continue
             except Exception as exc:
-                if "reasoning.effort" not in str(exc) and "reasoning" not in str(exc):
+                message = str(exc)
+                if "reasoning.effort" not in message and "reasoning" not in message:
                     raise
+                params = dict(params)
                 params.pop("reasoning", None)
                 last_exc = exc
                 continue
 
         if response is None:
-            raise last_exc or RuntimeError("LLM returned empty response")
+            raise last_exc or Exception("LLM returned empty response")
+        return response
 
-        content = self._extract_text(response)
-        tool_calls = self._extract_tool_calls(response)
+    def _build_responses_llm_response(
+        self,
+        response: Any,
+        *,
+        content: Optional[str] = None,
+        tool_calls: Optional[List[Dict[str, Any]]] = None,
+    ) -> LLMResponse:
+        """Normalize a Responses API payload into the repo's shared response shape."""
+        resolved_content = self._extract_text(response) if content is None else content
+        resolved_tool_calls = self._extract_tool_calls(response) if tool_calls is None else tool_calls
         usage = self._extract_usage(response)
         self._update_usage_stats(usage)
-
         return LLMResponse(
-            content=content,
-            tool_calls=tool_calls,
+            content=resolved_content,
+            tool_calls=resolved_tool_calls,
             usage=usage,
             model=getattr(response, "model", self.model),
             finish_reason=getattr(response, "status", ""),
             message={
                 "role": "assistant",
-                "content": content,
-                "tool_calls": tool_calls or None,
+                "content": resolved_content,
+                "tool_calls": resolved_tool_calls or None,
             },
         )
 
-    async def stream_chat(
+    async def chat(
+        self,
+        messages: List[Dict[str, str]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        response_format: Optional[Dict[str, Any]] = None,
+        **kwargs
+    ) -> LLMResponse:
+        params = self._build_responses_request_params(
+            messages=messages,
+            tools=tools,
+            response_format=response_format,
+            **kwargs,
+        )
+        response = await self._create_response(params)
+        return self._build_responses_llm_response(response)
+
+    async def call_json(
         self,
         messages: List[Dict[str, Any]],
+        schema: Optional[Dict[str, Any]] = None,
+        strict_json: bool = True,
+        **kwargs
+    ) -> LLMResponse:
+        """
+        Call the model with an optional JSON schema response_format.
+        """
+        if strict_json and schema:
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "structured_output",
+                    "schema": schema,
+                    "strict": True,
+                }
+            }
+        return await self.chat(messages=messages, **kwargs)
+
+    async def stream_chat(
+        self,
+        messages: List[Dict[str, str]],
         tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs: Any,
+        **kwargs
     ):
-        yield await self.chat(messages=messages, tools=tools, **kwargs)
-
-    async def aclose(self) -> None:
-        if not getattr(self, "client", None):
-            return
-        if self.async_mode and hasattr(self.client, "close"):
-            await self.client.close()
-        elif hasattr(self.client, "close"):
-            self.client.close()
-        self.client = None
-
-    def __repr__(self) -> str:
-        return f"OpenAIClient(model={self.model}, temperature={self.temperature})"
+        response = await self.chat(messages=messages, tools=tools, **kwargs)
+        yield response

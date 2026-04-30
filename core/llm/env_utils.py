@@ -1,53 +1,50 @@
-"""
-Environment helpers for local smoke-test scripts.
-"""
-
-from __future__ import annotations
-
 import os
-from pathlib import Path
-from typing import Iterable, Optional
+from typing import Optional
+
+from dotenv import find_dotenv, load_dotenv
 
 
-def load_env(override: bool = True, env_path: Optional[str] = None) -> None:
-    """
-    Load the first available .env file and normalize proxy variables.
-
-    The client code reads credentials from process env, so this keeps the loader
-    dependency-free and predictable for small standalone repos.
-    """
-    for candidate in _candidate_env_paths(env_path):
-        if not candidate.is_file():
-            continue
-        _load_env_file(candidate, override=override)
-        break
+def load_env(override: bool = False, env_path: Optional[str] = None) -> None:
+    if env_path:
+        load_dotenv(env_path, override=override)
+    else:
+        load_dotenv(find_dotenv(usecwd=True), override=override)
     _sync_proxy_env()
 
 
-def _candidate_env_paths(env_path: Optional[str]) -> Iterable[Path]:
-    if env_path:
-        yield Path(env_path).expanduser()
-        return
+def resolve_env_value(env_name: Optional[str]) -> Optional[str]:
+    candidate = str(env_name or "").strip()
+    if not candidate:
+        return None
+    value = os.getenv(candidate)
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
 
-    current = Path.cwd().resolve()
-    for directory in (current, *current.parents):
-        yield directory / ".env"
 
+def resolve_client_setting(
+    explicit_value: Optional[str],
+    *,
+    preferred_env: Optional[str] = None,
+    fallback_envs: tuple[str, ...] = (),
+    default: Optional[str] = None,
+) -> tuple[Optional[str], str]:
+    if explicit_value is not None:
+        candidate = str(explicit_value).strip()
+        if candidate:
+            return candidate, "explicit"
+        return default, "default" if default is not None else "missing"
 
-def _load_env_file(path: Path, override: bool) -> None:
-    with path.open() as handle:
-        for raw_line in handle:
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = value.strip().strip('"').strip("'")
-            if not key:
-                continue
-            if not override and key in os.environ:
-                continue
-            os.environ[key] = value
+    env_candidates = ((preferred_env,) if preferred_env else tuple()) + tuple(fallback_envs)
+    for env_name in env_candidates:
+        value = resolve_env_value(env_name)
+        if value:
+            return value, env_name
+
+    if default is not None:
+        return default, "default"
+    return None, "missing"
 
 
 def _sync_proxy_env() -> None:
