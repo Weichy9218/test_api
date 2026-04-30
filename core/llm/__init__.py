@@ -9,6 +9,7 @@ from .base import (
 )
 from .codex_sub2api_client import CodexSub2APIClient
 from .openai_client import OpenAIClient
+from .openrouter_newapi_client import OpenRouterNewAPIClient
 
 __all__ = [
     "BaseLLMClient",
@@ -18,4 +19,5 @@ __all__ = [
     "resolve_llm_client_name",
     "CodexSub2APIClient",
     "OpenAIClient",
+    "OpenRouterNewAPIClient",
 ]
